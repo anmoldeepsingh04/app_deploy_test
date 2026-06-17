@@ -1,0 +1,16 @@
+# virtual environment
+hwork/
+
+# python cache
+__pycache__/
+*.pyc
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+
+# optional data/output
+# results/
+# data/

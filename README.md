@@ -8,6 +8,30 @@ To make it easy for you to get started with GitLab, here's a list of recommended
 
 Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
 
+## Getting started with repo
+
+For setting up the enviroment and using the code, following steps are needed:
+
+1. go to your root directory in VSCode
+2. clone the repository with https using the following command:
+```
+git clone [repository-link]
+```
+3. create a virtual enviroment
+```
+pip -m venv [enviroment-name]
+```
+4. activate the environment
+```
+source [enviroment-name]/bin/activate
+```
+5. install dependencies
+```
+pip install -r requirements.txt
+```
+6. you are all set!
+
+
 ## Add your files
 
 * [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
