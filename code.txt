@@ -1,0 +1,1733 @@
+# importing required packages
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from sklearn.cluster import KMeans
+from scipy import ndimage
+import random
+import math
+from IPython.display import HTML, display
+import ipywidgets as widgets
+from IPython.display import clear_output
+import io, sys
+from scipy.optimize import root_scalar
+from contextlib import redirect_stdout
+import os
+
+# ==================== GLOBAL COLOR SCHEME ====================
+COLORS = {
+    'liquid':               (230, 255, 230),  # extremely light green (was light gray)
+    'delta_ferrite':        (100, 150, 255),  # light blue
+    'austenite':            (255, 100, 100),  # light red
+    'alpha_ferrite':        (100, 150, 255),  # same as delta (both are ferrite)
+    'proeutectoid_ferrite': (150, 200, 255),  # lighter blue for proeutectoid
+    'cementite_bulk':       (255, 220, 180),  # skin colour for bulk cementite
+    'cementite_boundary':   (0, 0, 0),        # black outline for large cementite
+    'pearlite_ferrite':     (220, 180, 140),  # tan
+    'pearlite_cementite':   (60, 60, 60),     # dark gray for pearlite cementite
+    'grain_boundary':       (0, 0, 0),        # black
+    'background':           (220, 220, 220),  # light gray
+}
+
+# ==================== IRON-CARBON PHASE DIAGRAM SIMULATOR (0-0.53%C) ====================
+class IronCarbonPhaseDiagramSimulator:
+    def __init__(self, carbon_percent=0.2, width=400, height=300, n_grains=50, seed=42):
+        self.carbon_percent = carbon_percent
+        self.width = width
+        self.height = height
+        self.seed = seed
+        random.seed(seed)
+
+        self._calculate_all_transition_temperatures()
+        self.original_grain_map = self._create_grain_structure(width, height, n_grains, seed)
+        self.unique_grains = np.unique(self.original_grain_map)
+        self.n_grains = len(self.unique_grains)
+
+        # Use global colors
+        self.liquid_color = COLORS['liquid']
+        self.delta_ferrite_color = COLORS['delta_ferrite']
+        self.austenite_color = COLORS['austenite']
+        self.alpha_ferrite_color = COLORS['alpha_ferrite']
+        self.proeutectoid_ferrite_color = COLORS['proeutectoid_ferrite']
+        self.cementite_color = COLORS['cementite_bulk']
+        self.cementite_boundary_color = COLORS['cementite_boundary']
+        self.pearlite_ferrite_color = COLORS['pearlite_ferrite']
+        self.pearlite_cementite_color = COLORS['pearlite_cementite']
+        self.grain_boundary_color = COLORS['grain_boundary']
+        self.background_color = COLORS['background']
+
+        self._select_fixed_cementite_positions()
+
+        print(f"COMPLETE IRON-CARBON PHASE DIAGRAM SIMULATION (0-0.53%C)")
+        print(f"Carbon content: {self.carbon_percent}%")
+        print(f"Number of grains: {self.n_grains}")
+        print("="*70)
+        self._print_all_transition_temperatures()
+
+    def _select_fixed_cementite_positions(self):
+        random.seed(self.seed)
+        self.cementite_positions = []
+        shrunk_map = self._shrink_grains_for_channels(self.original_grain_map, shrinkage_factor=8)
+        ferrite_channel_mask = (shrunk_map == -1)
+        ferrite_y, ferrite_x = np.where(ferrite_channel_mask)
+        ferrite_coords = list(zip(ferrite_x, ferrite_y))
+        if len(ferrite_coords) < 5:
+            ferrite_coords = [(x, y) for x in range(50, self.width-50, 50)
+                             for y in range(50, self.height-50, 50)]
+        n_cementite_grains = 5
+        attempts = 0
+        max_attempts = 100
+        while len(self.cementite_positions) < n_cementite_grains and attempts < max_attempts:
+            attempts += 1
+            if ferrite_coords:
+                x, y = random.choice(ferrite_coords)
+                valid = True
+                for existing in self.cementite_positions:
+                    dist = np.sqrt((x - existing['x'])**2 + (y - existing['y'])**2)
+                    if dist < 60:
+                        valid = False
+                        break
+                if valid:
+                    size = random.randint(7, 8)
+                    self.cementite_positions.append({'x': x, 'y': y, 'size': size})
+        if len(self.cementite_positions) < n_cementite_grains:
+            zones = [
+                (self.width//6, self.width//3, self.height//6, self.height//3),
+                (2*self.width//3, 5*self.width//6, self.height//6, self.height//3),
+                (self.width//6, self.width//3, 2*self.height//3, 5*self.height//6),
+                (2*self.width//3, 5*self.width//6, 2*self.height//3, 5*self.height//6),
+                (self.width//3, 2*self.width//3, self.height//3, 2*self.height//3)
+            ]
+            for xmin, xmax, ymin, ymax in zones:
+                if len(self.cementite_positions) >= n_cementite_grains:
+                    break
+                x = (xmin + xmax) // 2
+                y = (ymin + ymax) // 2
+                size = random.randint(7, 8)
+                self.cementite_positions.append({'x': x, 'y': y, 'size': size})
+
+    def _calculate_all_transition_temperatures(self):
+        C = self.carbon_percent
+        self.liquid_to_L_delta = -81.13 * C + 1536
+        self.L_delta_to_same = None
+        self.delta_to_gamma_delta = None
+        self.gamma_delta_to_gamma = None
+        self.L_delta_to_gamma_delta = None
+        self.L_delta_to_L_gamma = None
+        self.L_gamma_to_gamma = None
+        if C <= 0.09:
+            self.L_delta_to_same = -477.77 * C + 1536
+            self.delta_to_gamma_delta = 1122.22 * C + 1392
+            self.gamma_delta_to_gamma = -623.331756*(C**2) + 717.550337*C + 1390.6
+        elif C <= 0.17:
+            self.L_delta_to_gamma_delta = 1493
+            self.gamma_delta_to_gamma = -623.331756*(C**2) + 717.550337*C + 1390.6
+        elif C <= 0.53:
+            self.L_delta_to_L_gamma = 1493
+            self.L_gamma_to_gamma = 66.388*(C**3) - 139.918*(C**2) - 167.114*C + 1515.012
+        self.gamma_to_gamma_alpha = 910 - 203*math.sqrt(C) - 15.2*C + 0.44*(C**2)
+        if C < 0.02:
+            self.gamma_alpha_to_alpha = (27684937.1*(C**3) - 545343.1*(C**2) -
+                                        9597.6*C + 911.5)
+            self.alpha_to_alpha_cementite = (95613037.48*(C**3) - 4905199.82*(C**2) +
+                                            95670.87*C + 11.05)
+        else:
+            self.eutectoid_temp = 723
+        self.pearlite_start = 723
+        self.pearlite_complete = 600
+
+    def _print_all_transition_temperatures(self):
+        C = self.carbon_percent
+        print("COMPLETE TRANSITION TEMPERATURES:")
+        print("="*70)
+        print("\nHIGH TEMPERATURE (1600°C to 1200°C):")
+        print(f"  Liquid → Liquid + δ: {self.liquid_to_L_delta:.1f}°C")
+        if C <= 0.09:
+            print(f"  T = {self.L_delta_to_same:.1f}°C: Liquid+δ remains same")
+            print(f"  Liquid+δ → γ+δ: {self.delta_to_gamma_delta:.1f}°C")
+            print(f"  γ+δ → γ: {self.gamma_delta_to_gamma:.1f}°C")
+        elif C <= 0.17:
+            print(f"  Liquid+δ → γ+δ: {self.L_delta_to_gamma_delta:.1f}°C")
+            print(f"  γ+δ → γ: {self.gamma_delta_to_gamma:.1f}°C")
+        elif C <= 0.53:
+            print(f"  Liquid+δ → Liquid+γ: {self.L_delta_to_L_gamma:.1f}°C")
+            print(f"  Liquid+γ → γ: {self.L_gamma_to_gamma:.1f}°C")
+        print("\nMEDIUM TEMPERATURE (~1200°C to ~727°C):")
+        print(f"  γ → γ + α: {self.gamma_to_gamma_alpha:.1f}°C")
+        print("\nLOW TEMPERATURE (below ~727°C):")
+        if C < 0.02:
+            print(f"  γ + α → α: {self.gamma_alpha_to_alpha:.1f}°C")
+            print(f"  α → α + Fe₃C: {self.alpha_to_alpha_cementite:.1f}°C")
+        else:
+            print(f"  Eutectoid transformation starts at {self.eutectoid_temp}°C")
+            print(f"  Pearlite formation: 723°C to 600°C")
+        print("="*70)
+
+    def _create_grain_structure(self, width, height, n_grains, seed):
+        np.random.seed(seed)
+        Y, X = np.mgrid[:height, :width]
+        coordinates = np.column_stack((X.ravel(), Y.ravel()))
+        n_samples = min(10000, width * height)
+        sample_indices = np.random.choice(coordinates.shape[0], n_samples, replace=False)
+        samples = coordinates[sample_indices]
+        kmeans = KMeans(n_clusters=n_grains, random_state=seed, n_init=1)
+        kmeans.fit(samples)
+        labels = kmeans.predict(coordinates)
+        return labels.reshape(height, width)
+
+    def _get_grain_boundaries(self, grain_map):
+        boundary = np.zeros_like(grain_map, dtype=bool)
+        for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+            shifted = np.roll(np.roll(grain_map, dx, axis=1), dy, axis=0)
+            boundary |= (grain_map != shifted)
+        return boundary
+
+    def _shrink_grains_for_channels(self, grain_map, shrinkage_factor):
+        if shrinkage_factor <= 0:
+            return grain_map.copy()
+        shrunk_map = grain_map.copy()
+        structure = np.ones((3,3))
+        for gid in np.unique(grain_map):
+            if gid == -1: continue
+            mask = (grain_map == gid)
+            if np.sum(mask) < 10: continue
+            eroded = ndimage.binary_erosion(mask, structure=structure, iterations=shrinkage_factor)
+            eroded = ndimage.binary_fill_holes(eroded)
+            shrunk_map[eroded] = gid
+            shrunk_map[mask & ~eroded] = -1
+        return shrunk_map
+
+    def _create_pearlite_in_all_grains(self, microstructure, grain_map):
+        temp = microstructure.copy()
+        unique = np.unique(grain_map)
+        unique = unique[unique != -1]
+        for gid in unique:
+            mask = (grain_map == gid)
+            if np.sum(mask) < 10: continue
+            ys, xs = np.where(mask)
+            ymin, ymax = ys.min(), ys.max()
+            xmin, xmax = xs.min(), xs.max()
+            region = mask[ymin:ymax+1, xmin:xmax+1]
+            yidx, xidx = np.where(region)
+            if len(yidx)==0: continue
+            yc = yidx - np.mean(yidx)
+            xc = xidx - np.mean(xidx)
+            angle = 45
+            theta = np.deg2rad(angle)
+            u = xc*np.cos(theta) + yc*np.sin(theta)
+            lamella = 3
+            phase = ((u/lamella).astype(int) % 2)
+            cem_mask = (phase == 0)
+            fer_mask = (phase == 1)
+            cy = yidx[cem_mask] + ymin
+            cx = xidx[cem_mask] + xmin
+            fy = yidx[fer_mask] + ymin
+            fx = xidx[fer_mask] + xmin
+            temp[cy, cx] = self.pearlite_cementite_color
+            temp[fy, fx] = self.pearlite_ferrite_color
+        for gid in unique:
+            microstructure[grain_map == gid] = temp[grain_map == gid]
+
+    # ---------- unified cementite drawing method ----------
+    def _draw_cementite_grains(self, micro, allowed_mask):
+        h, w = allowed_mask.shape
+        for cem in self.cementite_positions:
+            x, y, sz = cem['x'], cem['y'], cem['size']
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            # Bulk
+            for dx in range(-sz, sz+1):
+                for dy in range(-sz, sz+1):
+                    xi, yi = x+dx, y+dy
+                    if 0 <= xi < w and 0 <= yi < h and dx*dx + dy*dy <= sz*sz:
+                        if allowed_mask[yi, xi]:
+                            micro[yi, xi] = self.cementite_color
+            # Outline
+            for dx in range(-sz-1, sz+2):
+                for dy in range(-sz-1, sz+2):
+                    xi, yi = x+dx, y+dy
+                    if 0 <= xi < w and 0 <= yi < h:
+                        d2 = dx*dx + dy*dy
+                        if (sz+0.5)**2 < d2 <= (sz+1.5)**2:
+                            if allowed_mask[yi, xi] and np.array_equal(micro[yi, xi], self.cementite_color):
+                                micro[yi, xi] = self.cementite_boundary_color
+
+    def get_phase_region(self, temperature):
+        C = self.carbon_percent
+        if temperature > self.liquid_to_L_delta:
+            return {'phase':'liquid', 'description':'Liquid (L)', 'grains_visible': False}
+        elif C <= 0.09:
+            if temperature > self.L_delta_to_same:
+                return {'phase':'liquid_delta_ferrite', 'description':'L + δ-ferrite',
+                        'grains_visible': True, 'phase_type': 'delta_ferrite',
+                        'shrinkage_factor': 5}
+            elif temperature > self.delta_to_gamma_delta:
+                return {'phase':'liquid_delta_ferrite', 'description':'L + δ-ferrite',
+                        'grains_visible': True, 'phase_type': 'delta_ferrite',
+                        'shrinkage_factor': 5}
+            elif temperature > self.gamma_delta_to_gamma:
+                return {'phase':'gamma_delta_ferrite', 'description':'γ + δ-ferrite',
+                        'grains_visible': True, 'phase_type': 'both'}
+        elif C <= 0.17:
+            if temperature > self.L_delta_to_gamma_delta:
+                return {'phase':'liquid_delta_ferrite', 'description':'L + δ-ferrite',
+                        'grains_visible': True, 'phase_type': 'delta_ferrite',
+                        'shrinkage_factor': 5}
+            elif temperature > self.gamma_delta_to_gamma:
+                return {'phase':'gamma_delta_ferrite', 'description':'γ + δ-ferrite',
+                        'grains_visible': True, 'phase_type': 'both'}
+        elif C <= 0.53:
+            if temperature > self.L_delta_to_L_gamma:
+                return {'phase':'liquid_delta_ferrite', 'description':'L + δ-ferrite',
+                        'grains_visible': True, 'phase_type': 'delta_ferrite',
+                        'shrinkage_factor': 5}
+            elif temperature > self.L_gamma_to_gamma:
+                return {'phase':'liquid_austenite', 'description':'L + γ (austenite)',
+                        'grains_visible': True, 'phase_type': 'austenite'}
+        if temperature > self.gamma_to_gamma_alpha + 5:
+            return {'phase':'austenite_only', 'description':'Austenite (γ)',
+                    'grains_visible': True, 'phase_type': 'austenite'}
+        if C < 0.02:
+            if temperature > self.gamma_alpha_to_alpha + 5:
+                shrinkage = int((self.gamma_to_gamma_alpha - temperature) / 15)
+                shrinkage = max(1, min(6, shrinkage))
+                return {'phase':'austenite_ferrite', 'description':'α + γ',
+                        'grains_visible': True, 'phase_type': 'both', 'shrinkage_factor': shrinkage}
+            elif temperature > self.alpha_to_alpha_cementite + 5:
+                return {'phase':'ferrite_only', 'description':'α-ferrite (α)',
+                        'grains_visible': True, 'phase_type': 'alpha_ferrite'}
+            else:
+                return {'phase':'ferrite_cementite', 'description':'α + Fe₃C',
+                        'grains_visible': True, 'phase_type': 'both', 'shrinkage_factor': 10}
+        elif temperature > self.pearlite_start:
+            shrinkage = int((self.gamma_to_gamma_alpha - temperature) / 15)
+            shrinkage = max(1, min(6, shrinkage))
+            return {'phase':'austenite_ferrite', 'description':'α + γ',
+                    'grains_visible': True, 'phase_type': 'both', 'shrinkage_factor': shrinkage}
+        else:
+            if temperature >= self.pearlite_start:
+                pearlite_fraction = 0.1
+                return {'phase':'pearlite_forming', 'description': f'Pearlite forming ({pearlite_fraction*100:.0f}%)',
+                        'grains_visible': True, 'phase_type': 'pearlite', 'shrinkage_factor': 6,
+                        'pearlite_fraction': pearlite_fraction}
+            elif temperature > self.pearlite_complete:
+                pearlite_fraction = 1.0 - ((temperature - self.pearlite_complete) /
+                                          (self.pearlite_start - self.pearlite_complete))
+                pearlite_fraction = max(0.1, min(0.9, pearlite_fraction))
+                return {'phase':'pearlite_forming', 'description': f'Pearlite forming ({pearlite_fraction*100:.0f}%)',
+                        'grains_visible': True, 'phase_type': 'pearlite', 'shrinkage_factor': 6,
+                        'pearlite_fraction': pearlite_fraction}
+            else:
+                return {'phase':'pearlite_complete', 'description': 'α-ferrite + Pearlite + Fe₃C III',
+                        'grains_visible': True, 'phase_type': 'pearlite', 'shrinkage_factor': 6}
+
+    def generate_microstructure(self, temperature):
+        state = self.get_phase_region(temperature)
+        micro = np.ones((self.height, self.width, 3), dtype=np.uint8) * self.background_color
+        current = None
+
+        if state['phase'] == 'liquid':
+            micro[:,:,:] = self.liquid_color
+            current = np.full((self.height, self.width), -1, dtype=int)
+        elif state['phase'] == 'liquid_delta_ferrite':
+            shrink = state.get('shrinkage_factor', 5)
+            shrunk = self._shrink_grains_for_channels(self.original_grain_map, shrink)
+            micro[:,:,:] = self.liquid_color
+            for gid in self.unique_grains:
+                gmask = (shrunk == gid)
+                if np.any(gmask):
+                    micro[gmask] = self.delta_ferrite_color
+            current = shrunk
+        elif state['phase'] == 'liquid_austenite':
+            micro[:,:,:] = self.liquid_color
+            current = self.original_grain_map.copy()
+            for gid in self.unique_grains:
+                micro[self.original_grain_map == gid] = self.austenite_color
+        elif state['phase'] == 'gamma_delta_ferrite':
+            current = self.original_grain_map.copy()
+            for i, gid in enumerate(self.unique_grains):
+                mask = (self.original_grain_map == gid)
+                micro[mask] = self.austenite_color if i%2==0 else self.delta_ferrite_color
+        elif state['phase'] == 'austenite_only':
+            current = self.original_grain_map.copy()
+            for gid in self.unique_grains:
+                micro[self.original_grain_map == gid] = self.austenite_color
+        elif state['phase'] == 'austenite_ferrite':
+            shrink = state.get('shrinkage_factor',1)
+            shrunk = self._shrink_grains_for_channels(self.original_grain_map, shrink)
+            ferrite = (shrunk == -1)
+            micro[ferrite] = self.proeutectoid_ferrite_color
+            for gid in self.unique_grains:
+                gmask = (shrunk == gid)
+                if np.any(gmask):
+                    micro[gmask] = self.austenite_color
+            current = shrunk
+        elif state['phase'] == 'ferrite_only':
+            current = self.original_grain_map.copy()
+            for gid in self.unique_grains:
+                micro[self.original_grain_map == gid] = self.alpha_ferrite_color
+        elif state['phase'] == 'ferrite_cementite':
+            shrink = state.get('shrinkage_factor',10)
+            shrunk = self._shrink_grains_for_channels(self.original_grain_map, shrink)
+            ferrite = (shrunk == -1)
+            micro[ferrite] = self.alpha_ferrite_color
+            for gid in self.unique_grains:
+                gmask = (shrunk == gid)
+                if np.any(gmask):
+                    micro[gmask] = self.cementite_color
+            current = shrunk
+        elif state['phase'] == 'pearlite_forming':
+            shrink = state.get('shrinkage_factor',6)
+            pearl_frac = state.get('pearlite_fraction',0.0)
+            shrunk = self._shrink_grains_for_channels(self.original_grain_map, shrink)
+            ferrite = (shrunk == -1)
+            micro[ferrite] = self.proeutectoid_ferrite_color
+            n_pearl = int(pearl_frac * len(self.unique_grains))
+            pearl_ids = list(self.unique_grains)[:n_pearl]
+            pearl_map = np.full_like(shrunk, -1)
+            for gid in pearl_ids:
+                gmask = (shrunk == gid)
+                if np.any(gmask):
+                    pearl_map[gmask] = gid
+            if np.any(pearl_map != -1):
+                self._create_pearlite_in_all_grains(micro, pearl_map)
+            for gid in self.unique_grains:
+                if gid in pearl_ids: continue
+                gmask = (shrunk == gid)
+                if np.any(gmask):
+                    micro[gmask] = self.austenite_color
+            current = shrunk
+        elif state['phase'] == 'pearlite_complete':
+            shrink = state.get('shrinkage_factor',6)
+            shrunk = self._shrink_grains_for_channels(self.original_grain_map, shrink)
+            ferrite = (shrunk == -1)
+            micro[ferrite] = self.proeutectoid_ferrite_color
+            self._create_pearlite_in_all_grains(micro, shrunk)
+            current = shrunk
+        else:
+            current = self.original_grain_map.copy()
+            for gid in self.unique_grains:
+                micro[self.original_grain_map == gid] = self.austenite_color
+
+        if state.get('grains_visible', False) and state['phase'] != 'liquid':
+            if current is not None:
+                bounds = self._get_grain_boundaries(current)
+                micro[bounds] = self.grain_boundary_color
+
+        if temperature < 723 and current is not None:
+            allowed = (current == -1)
+            self._draw_cementite_grains(micro, allowed)
+
+        return micro, state
+
+
+# ==================== STEEL MICROSTRUCTURE SIMULATOR (0.53-2.06%C) ====================
+class SteelMicrostructureSimulator:
+    def __init__(self, carbon_percent=0.76, width=400, height=300, n_grains=50, seed=42):
+        self.carbon_percent = carbon_percent
+        self.width = width
+        self.height = height
+        self.seed = seed
+        self._calculate_transformation_temperatures()
+        self.original_grain_map = self._create_grain_structure(width, height, n_grains, seed)
+        self.unique_grains = np.unique(self.original_grain_map)
+        self.n_grains = len(self.unique_grains)
+
+        self.liquid_color = COLORS['liquid']
+        self.austenite_color = COLORS['austenite']
+        self.proeutectoid_ferrite_color = COLORS['proeutectoid_ferrite']
+        self.proeutectoid_cementite_color = COLORS['cementite_bulk']
+        self.ferrite_in_pearlite_color = COLORS['pearlite_ferrite']
+        self.cementite_in_pearlite_color = COLORS['pearlite_cementite']
+        self.grain_boundary_color = COLORS['grain_boundary']
+        self.background_color = COLORS['background']
+
+        self.cementite_color = self.proeutectoid_cementite_color
+        self.cementite_boundary_color = self.grain_boundary_color
+
+        if abs(self.carbon_percent - 0.76) < 0.01:
+            self.steel_type = "eutectoid"
+            self.transition_temp = self.eutectoid_temp
+            self.proeutectoid_phase_name = None
+            self.proeutectoid_phase_color = None
+        elif self.carbon_percent < 0.76:
+            self.steel_type = "hypoeutectoid"
+            self.transition_temp = self.A3_temp
+            self.proeutectoid_phase_name = "ferrite"
+            self.proeutectoid_phase_color = self.proeutectoid_ferrite_color
+        else:
+            self.steel_type = "hypereutectoid"
+            self.transition_temp = self.Acm_temp
+            self.proeutectoid_phase_name = "cementite"
+            self.proeutectoid_phase_color = self.proeutectoid_cementite_color
+
+        self._select_fixed_cementite_positions()
+
+        print(f"Carbon content: {self.carbon_percent}%")
+        print(f"Steel Type: {self.steel_type.upper()}")
+        self._print_transformation_temperatures()
+
+    def _select_fixed_cementite_positions(self):
+        random.seed(self.seed)
+        self.cementite_positions = []
+        shrunk = self._erode_grains(self.original_grain_map, erosion_amount=8)
+        background = (shrunk == -1)
+        bg_y, bg_x = np.where(background)
+        bg_coords = list(zip(bg_x, bg_y))
+        if len(bg_coords) < 5:
+            bg_coords = [(x, y) for x in range(50, self.width-50, 50)
+                         for y in range(50, self.height-50, 50)]
+        n_cementite = 5
+        attempts = 0
+        max_attempts = 100
+        while len(self.cementite_positions) < n_cementite and attempts < max_attempts:
+            attempts += 1
+            if bg_coords:
+                x, y = random.choice(bg_coords)
+                valid = True
+                for existing in self.cementite_positions:
+                    dist = np.sqrt((x - existing['x'])**2 + (y - existing['y'])**2)
+                    if dist < 60:
+                        valid = False
+                        break
+                if valid:
+                    size = random.randint(7, 8)
+                    self.cementite_positions.append({'x': x, 'y': y, 'size': size})
+        if len(self.cementite_positions) < n_cementite:
+            zones = [
+                (self.width//6, self.width//3, self.height//6, self.height//3),
+                (2*self.width//3, 5*self.width//6, self.height//6, self.height//3),
+                (2*self.width//3, 5*self.width//6, 2*self.height//3, 5*self.height//6),
+                (self.width//3, 2*self.width//3, self.height//3, 2*self.height//3)
+            ]
+            for xmin, xmax, ymin, ymax in zones:
+                if len(self.cementite_positions) >= n_cementite:
+                    break
+                x = (xmin + xmax) // 2
+                y = (ymin + ymax) // 2
+                size = random.randint(7, 8)
+                self.cementite_positions.append({'x': x, 'y': y, 'size': size})
+
+    def _draw_cementite_grains(self, micro, allowed_mask):
+        h, w = allowed_mask.shape
+        for cem in self.cementite_positions:
+            x, y, sz = cem['x'], cem['y'], cem['size']
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            for dx in range(-sz, sz+1):
+                for dy in range(-sz, sz+1):
+                    xi, yi = x+dx, y+dy
+                    if 0 <= xi < w and 0 <= yi < h and dx*dx + dy*dy <= sz*sz:
+                        if allowed_mask[yi, xi]:
+                            micro[yi, xi] = self.cementite_color
+            for dx in range(-sz-1, sz+2):
+                for dy in range(-sz-1, sz+2):
+                    xi, yi = x+dx, y+dy
+                    if 0 <= xi < w and 0 <= yi < h:
+                        d2 = dx*dx + dy*dy
+                        if (sz+0.5)**2 < d2 <= (sz+1.5)**2:
+                            if allowed_mask[yi, xi] and np.array_equal(micro[yi, xi], self.cementite_color):
+                                micro[yi, xi] = self.cementite_boundary_color
+
+    def _calculate_transformation_temperatures(self):
+        C = self.carbon_percent
+        self.liquidus_temp = 0.325201*C**3 - 5.168028*C**2 - 75.120496*C + 1538.747373
+        self.solidus_temp = 66.388*C**3 - 139.918*C**2 - 167.114*C + 1515.012
+        self.eutectoid_temp = 723
+        if C < 0.76:
+            self.A3_temp = 910 - 203*np.sqrt(C) - 15.2*C + 0.44*C**2
+            self.Acm_temp = None
+        else:
+            self.Acm_temp = 330.77*C + 471.62
+            self.A3_temp = None
+
+    def _print_transformation_temperatures(self):
+        print("\n"+"="*50)
+        print("TRANSFORMATION TEMPERATURES:")
+        print("="*50)
+        print(f"Liquidus: {self.liquidus_temp:.1f}°C")
+        print(f"Solidus: {self.solidus_temp:.1f}°C")
+        if self.steel_type == "eutectoid":
+            print(f"Eutectoid: {self.eutectoid_temp}°C")
+        elif self.steel_type == "hypoeutectoid":
+            print(f"A3: {self.A3_temp:.1f}°C")
+            print(f"Eutectoid: {self.eutectoid_temp}°C")
+        else:
+            print(f"Acm: {self.Acm_temp:.1f}°C")
+            print(f"Eutectoid: {self.eutectoid_temp}°C")
+        print("="*50)
+
+    def _create_grain_structure(self, width, height, n_grains, seed):
+        np.random.seed(seed)
+        Y, X = np.mgrid[:height, :width]
+        coordinates = np.column_stack((X.ravel(), Y.ravel()))
+        n_samples = min(10000, width * height)
+        sample_indices = np.random.choice(coordinates.shape[0], n_samples, replace=False)
+        samples = coordinates[sample_indices]
+        kmeans = KMeans(n_clusters=n_grains, random_state=seed, n_init=1)
+        kmeans.fit(samples)
+        labels = kmeans.predict(coordinates)
+        return labels.reshape(height, width)
+
+    def _get_grain_boundaries(self, grain_map):
+        boundary = np.zeros_like(grain_map, dtype=bool)
+        for shift in [1,-1]:
+            boundary |= (grain_map != np.roll(grain_map, shift, axis=0))
+            boundary |= (grain_map != np.roll(grain_map, shift, axis=1))
+        return boundary
+
+    def _erode_grains(self, grain_map, erosion_amount):
+        if erosion_amount <= 0:
+            return grain_map.copy()
+        eroded = grain_map.copy()
+        for gid in self.unique_grains:
+            mask = (grain_map == gid)
+            struct = np.ones((3,3))
+            er = ndimage.binary_erosion(mask, struct, iterations=erosion_amount)
+            eroded[er] = gid
+            eroded[mask & ~er] = -1
+        return eroded
+
+    def _create_proeutectoid_channels_from_erosion(self, original, eroded):
+        return (eroded == -1)
+
+    def _add_pearlite_to_grain(self, microstructure, grain_id, current_grain_map):
+        mask = (current_grain_map == grain_id)
+        if np.sum(mask) < 10: return
+        ys, xs = np.where(mask)
+        ymin, ymax = ys.min(), ys.max()
+        xmin, xmax = xs.min(), xs.max()
+        region = mask[ymin:ymax+1, xmin:xmax+1]
+        Yg, Xg = np.where(region)
+        if len(Xg)==0: return
+        rng = np.random.RandomState(grain_id)
+        angle = rng.uniform(0,180)
+        theta = np.deg2rad(angle)
+        cy, cx = np.mean(Yg), np.mean(Xg)
+        Yc = Yg - cy
+        Xc = Xg - cx
+        U = Xc*np.cos(theta) + Yc*np.sin(theta)
+        spacing = rng.uniform(2,4)
+        phase = (U/spacing).astype(int) % 2
+        cem = (phase == 0)
+        fer = (phase == 1)
+        cem_y = Yg[cem] + ymin
+        cem_x = Xg[cem] + xmin
+        fer_y = Yg[fer] + ymin
+        fer_x = Xg[fer] + xmin
+        valid_cem = (cem_x < microstructure.shape[1]) & (cem_y < microstructure.shape[0])
+        valid_fer = (fer_x < microstructure.shape[1]) & (fer_y < microstructure.shape[0])
+        microstructure[cem_y[valid_cem], cem_x[valid_cem]] = self.cementite_in_pearlite_color
+        microstructure[fer_y[valid_fer], fer_x[valid_fer]] = self.ferrite_in_pearlite_color
+
+    def get_transformation_state(self, temperature):
+        if temperature > self.liquidus_temp:
+            return {'phase':'liquid','description':'Liquid (L)','erosion_amount':0}
+        elif temperature > self.solidus_temp:
+            frac = ((self.liquidus_temp - temperature) / (self.liquidus_temp - self.solidus_temp))
+            frac = np.clip(frac,0,1)
+            return {'phase':'liquid_austenite',
+                    'description':'L + γ (austenite)',
+                    'erosion_amount':0}
+        elif self.steel_type=="eutectoid" and temperature>self.eutectoid_temp:
+            return {'phase':'austenite','description':'Austenite (γ)','erosion_amount':0}
+        elif self.steel_type!="eutectoid" and temperature>self.transition_temp:
+            return {'phase':'austenite','description':'Austenite (γ)','erosion_amount':0}
+        elif self.steel_type!="eutectoid" and temperature>self.eutectoid_temp:
+            if self.steel_type=="hypoeutectoid":
+                max_pro = (0.76 - self.carbon_percent) / (0.76 - 0.02)
+            else:
+                max_pro = (self.carbon_percent - 0.76) / (2.06 - 0.76)
+            max_pro = np.clip(max_pro,0,0.95)
+            frac_range = self.transition_temp - self.eutectoid_temp
+            under = self.transition_temp - temperature
+            pro_frac = min((under/frac_range)*max_pro, max_pro)
+            max_erosion = 5
+            erosion = int(pro_frac * max_erosion / max_pro) if max_pro>0 else 0
+            erosion = max(1, erosion)
+            phase_name = self.proeutectoid_phase_name
+            if self.steel_type == "hypoeutectoid":
+                region_name = "α + γ"
+            else:
+                region_name = "γ + Fe₃C (austenite + cementite)"
+            return {'phase':'proeutectoid_forming',
+                    'description':region_name,
+                    'erosion_amount':erosion}
+        else:
+            if self.steel_type=="eutectoid":
+                desc = 'Pearlite'
+            elif self.steel_type == "hypoeutectoid":
+                desc = 'α-ferrite + Pearlite + Fe₃C III'
+            else:
+                desc = 'Pearlite + Fe₃C II'
+            return {'phase':'pearlite_forming','description':desc,'erosion_amount':5}
+
+    def generate_microstructure(self, temperature):
+        state = self.get_transformation_state(temperature)
+        micro = np.ones((self.height,self.width,3),dtype=np.uint8)*self.background_color
+        current = None
+
+        if state['phase'] == 'liquid':
+            micro[:,:,:] = self.liquid_color
+            current = np.full((self.height,self.width),-1,dtype=int)
+        elif state['phase'] == 'liquid_austenite':
+            micro[:,:,:] = self.liquid_color
+            frac = ((self.liquidus_temp - temperature)/(self.liquidus_temp - self.solidus_temp))
+            frac = np.clip(frac,0,1)
+            n_vis = int(frac * self.n_grains)
+            visible = self.unique_grains[:n_vis]
+            for gid in visible:
+                micro[self.original_grain_map == gid] = self.austenite_color
+            current = self.original_grain_map.copy()
+            for gid in self.unique_grains:
+                if gid not in visible:
+                    current[current == gid] = -1
+            bounds = self._get_grain_boundaries(current)
+            micro[bounds] = self.grain_boundary_color
+        else:
+            if self.steel_type == "eutectoid":
+                if state['phase'] == 'austenite':
+                    for gid in self.unique_grains:
+                        micro[self.original_grain_map == gid] = self.austenite_color
+                    current = self.original_grain_map.copy()
+                else:
+                    for gid in self.unique_grains:
+                        micro[self.original_grain_map == gid] = self.ferrite_in_pearlite_color
+                        self._add_pearlite_to_grain(micro, gid, self.original_grain_map)
+                    current = self.original_grain_map.copy()
+            else:
+                if state['phase'] == 'austenite':
+                    for gid in self.unique_grains:
+                        micro[self.original_grain_map == gid] = self.austenite_color
+                    current = self.original_grain_map.copy()
+                else:
+                    erosion = state['erosion_amount']
+                    eroded = self._erode_grains(self.original_grain_map, erosion)
+                    pro_mask = self._create_proeutectoid_channels_from_erosion(self.original_grain_map, eroded)
+                    micro[pro_mask] = self.proeutectoid_phase_color
+                    remaining = ~pro_mask
+                    if state['phase'] == 'proeutectoid_forming':
+                        for gid in self.unique_grains:
+                            gmask = (eroded == gid)
+                            micro[gmask] = self.austenite_color
+                    else:
+                        for gid in self.unique_grains:
+                            gmask = (eroded == gid) & remaining
+                            micro[gmask] = self.ferrite_in_pearlite_color
+                            self._add_pearlite_to_grain(micro, gid, eroded)
+                    current = eroded
+
+        if state['phase'] not in ['liquid']:
+            if state['phase'] != 'liquid_austenite' and current is not None:
+                bounds = self._get_grain_boundaries(current)
+                micro[bounds] = self.grain_boundary_color
+
+        if temperature < 723 and current is not None:
+            allowed = (current == -1)
+            self._draw_cementite_grains(micro, allowed)
+
+        return micro, state
+
+
+# ==================== GENERALIZED STEEL (2.06-6.67%C) ====================
+class GeneralizedSteel:
+    def __init__(self, carbon_percent=2.06, width=500, height=400, n_grains=50, seed=42):
+        self.carbon_percent = carbon_percent
+        self.width = width
+        self.height = height
+        self.seed = seed
+
+        if carbon_percent < 4.3:
+            self.steel_type = 'hypoeutectoid'
+            C = carbon_percent
+            self.liquid_to_austenite_temp = 0.325201*C**3 - 5.168028*C**2 - 75.120496*C + 1538.747373
+            self.liquidus_temp = self.liquid_to_austenite_temp + 50
+            self.austenite_start_temp = self.liquid_to_austenite_temp - 50
+            self.large_grains_type = 'austenite'
+        elif carbon_percent == 4.3:
+            self.steel_type = 'eutectoid'
+            self.liquidus_temp = 1147
+            self.large_grains_type = None
+        else:
+            self.steel_type = 'hypereutectoid'
+            C = carbon_percent
+            self.liquid_to_cementite_temp = -19.714*C**3 + 313.032*C**2 - 1554.375*C + 3610.368
+            self.liquidus_temp = self.liquid_to_cementite_temp + 50
+            self.cementite_start_temp = self.liquid_to_cementite_temp - 50
+            self.large_grains_type = 'cementite'
+
+        self.eutectic_temp = 1147
+        self.eutectoid_temp = 723
+
+        self.original_grain_map = self._create_high_density_grain_structure(width, height, n_grains, seed)
+        self.unique_grains = np.unique(self.original_grain_map)
+        self.n_grains = len(self.unique_grains)
+
+        if self.steel_type != 'eutectoid':
+            self.large_grain_ids = self._select_interior_grains_for_enlargement(6)
+        else:
+            self.large_grain_ids = np.array([])
+
+        self.liquid_color = COLORS['liquid']
+        self.austenite_color = COLORS['austenite']
+        self.proeutectoid_ferrite_color = COLORS['proeutectoid_ferrite']
+        self.proeutectoid_cementite_color = COLORS['cementite_bulk']
+        self.ferrite_in_pearlite_color = COLORS['pearlite_ferrite']
+        self.cementite_in_pearlite_color = COLORS['pearlite_cementite']
+        self.grain_boundary_color = COLORS['grain_boundary']
+        self.background_color = COLORS['background']
+
+        self.cementite_color = self.proeutectoid_cementite_color
+        self.cementite_boundary_color = self.grain_boundary_color
+
+        self.current_grain_maps = {}
+        self.shrunk_grain_map_1147 = self._create_mixed_shrunk_grains()
+        self.grain_boundaries = self._get_grain_boundaries(self.shrunk_grain_map_1147)
+        self._precompute_pearlite_transformation_order()
+        self._select_fixed_cementite_positions()
+
+    def _select_fixed_cementite_positions(self):
+        random.seed(self.seed)
+        self.cementite_positions = []
+        background = (self.shrunk_grain_map_1147 == -1)
+        bg_y, bg_x = np.where(background)
+        bg_coords = list(zip(bg_x, bg_y))
+        if len(bg_coords) < 5:
+            bg_coords = [(x, y) for x in range(50, self.width-50, 50)
+                         for y in range(50, self.height-50, 50)]
+        n_cementite = 5
+        attempts = 0
+        max_attempts = 100
+        while len(self.cementite_positions) < n_cementite and attempts < max_attempts:
+            attempts += 1
+            if bg_coords:
+                x, y = random.choice(bg_coords)
+                valid = True
+                for existing in self.cementite_positions:
+                    dist = np.sqrt((x - existing['x'])**2 + (y - existing['y'])**2)
+                    if dist < 60:
+                        valid = False
+                        break
+                if valid:
+                    size = random.randint(7, 8)
+                    self.cementite_positions.append({'x': x, 'y': y, 'size': size})
+        if len(self.cementite_positions) < n_cementite:
+            zones = [
+                (self.width//6, self.width//3, self.height//6, self.height//3),
+                (2*self.width//3, 5*self.width//6, self.height//6, self.height//3),
+                (2*self.width//3, 5*self.width//6, 2*self.height//3, 5*self.height//6),
+                (self.width//3, 2*self.width//3, self.height//3, 2*self.height//3)
+            ]
+            for xmin, xmax, ymin, ymax in zones:
+                if len(self.cementite_positions) >= n_cementite:
+                    break
+                x = (xmin + xmax) // 2
+                y = (ymin + ymax) // 2
+                size = random.randint(7, 8)
+                self.cementite_positions.append({'x': x, 'y': y, 'size': size})
+
+    def _draw_cementite_grains(self, micro, allowed_mask):
+        h, w = allowed_mask.shape
+        for cem in self.cementite_positions:
+            x, y, sz = cem['x'], cem['y'], cem['size']
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            for dx in range(-sz, sz+1):
+                for dy in range(-sz, sz+1):
+                    xi, yi = x+dx, y+dy
+                    if 0 <= xi < w and 0 <= yi < h and dx*dx + dy*dy <= sz*sz:
+                        if allowed_mask[yi, xi]:
+                            micro[yi, xi] = self.cementite_color
+            for dx in range(-sz-1, sz+2):
+                for dy in range(-sz-1, sz+2):
+                    xi, yi = x+dx, y+dy
+                    if 0 <= xi < w and 0 <= yi < h:
+                        d2 = dx*dx + dy*dy
+                        if (sz+0.5)**2 < d2 <= (sz+1.5)**2:
+                            if allowed_mask[yi, xi] and np.array_equal(micro[yi, xi], self.cementite_color):
+                                micro[yi, xi] = self.cementite_boundary_color
+
+    def _create_high_density_grain_structure(self, width, height, n_grains, seed):
+        np.random.seed(seed)
+        Y, X = np.mgrid[:height, :width]
+        coordinates = np.column_stack((X.ravel(), Y.ravel()))
+        n_samples = min(15000, width * height)
+        sample_indices = np.random.choice(coordinates.shape[0], n_samples, replace=False)
+        samples = coordinates[sample_indices]
+        kmeans = KMeans(n_clusters=n_grains, random_state=seed, n_init=1)
+        kmeans.fit(samples)
+        labels = kmeans.predict(coordinates)
+        return labels.reshape(height, width)
+
+    def _select_interior_grains_for_enlargement(self, n_large=6):
+        boundary_mask = np.zeros((self.height,self.width), dtype=bool)
+        thick = 40
+        boundary_mask[:thick,:] = True
+        boundary_mask[-thick:,:] = True
+        boundary_mask[:,:thick] = True
+        boundary_mask[:,-thick:] = True
+        interior = []
+        for gid in self.unique_grains:
+            mask = (self.original_grain_map == gid)
+            if not np.any(mask & boundary_mask):
+                if np.sum(mask) > 100:
+                    interior.append(gid)
+        if len(interior) < n_large:
+            interior = list(self.unique_grains)
+        selected = []
+        remaining = interior.copy()
+        while len(selected) < n_large and remaining:
+            centers = []
+            for g in selected:
+                ym, xm = np.where(self.original_grain_map == g)
+                if len(ym)>0:
+                    centers.append((np.mean(ym), np.mean(xm)))
+            dists = []
+            for g in remaining:
+                ym, xm = np.where(self.original_grain_map == g)
+                if len(ym)==0: continue
+                center = (np.mean(ym), np.mean(xm))
+                if not centers:
+                    mindist = float('inf')
+                else:
+                    mindist = min(np.sqrt((center[0]-c[0])**2 + (center[1]-c[1])**2) for c in centers)
+                size = np.sum(self.original_grain_map == g)
+                dists.append((g, mindist, size))
+            if not dists: break
+            dists.sort(key=lambda x: (x[1], -x[2]), reverse=True)
+            selected.append(dists[0][0])
+            remaining.remove(dists[0][0])
+        return np.array(selected[:n_large])
+
+    def _create_mixed_shrunk_grains(self):
+        if self.steel_type == 'eutectoid':
+            mixed = self.original_grain_map.copy()
+            occupied = np.zeros((self.height,self.width), dtype=bool)
+            struct = np.ones((3,3))
+            for gid in self.unique_grains:
+                mask = (self.original_grain_map == gid)
+                rng = np.random.RandomState(gid)
+                iters = rng.randint(8,12)
+                eroded = ndimage.binary_erosion(mask, struct, iterations=iters)
+                eroded = ndimage.binary_fill_holes(eroded) & ~occupied
+                if np.any(eroded):
+                    mixed[eroded] = gid
+                    occupied |= eroded
+                    mixed[mask & ~eroded] = -1
+                else:
+                    mixed[mask] = -1
+            mixed[~occupied] = -1
+            return mixed
+        else:
+            mixed = self.original_grain_map.copy()
+            occupied = np.zeros((self.height,self.width), dtype=bool)
+            struct = np.ones((3,3))
+            large_struct = np.ones((7,7))
+            for gid in self.large_grain_ids:
+                mask = (self.original_grain_map == gid)
+                rng = np.random.RandomState(gid)
+                eroded = mask.copy()
+                eroded = ndimage.binary_fill_holes(eroded)
+                dilated = ndimage.binary_dilation(eroded, struct, iterations=6)
+                dilated = ndimage.binary_dilation(dilated, large_struct, iterations=3)
+                dilated = ndimage.binary_dilation(dilated, np.ones((5,5)), iterations=2)
+                dilated = ndimage.binary_fill_holes(dilated) & ~occupied
+                if np.any(dilated):
+                    mixed[dilated] = gid
+                    occupied |= dilated
+                    mixed[mask & ~dilated] = -1
+            for gid in self.unique_grains:
+                if gid in self.large_grain_ids: continue
+                mask = (self.original_grain_map == gid)
+                rng = np.random.RandomState(gid)
+                iters = rng.randint(8,12)
+                eroded = ndimage.binary_erosion(mask, struct, iterations=iters)
+                eroded = ndimage.binary_fill_holes(eroded) & ~occupied
+                if np.any(eroded):
+                    mixed[eroded] = gid
+                    occupied |= eroded
+                    mixed[mask & ~eroded] = -1
+                else:
+                    mixed[mask] = -1
+            mixed[~occupied] = -1
+            return mixed
+
+    def _get_grain_boundaries(self, grain_map):
+        boundary = np.zeros_like(grain_map, dtype=bool)
+        for shift in [1,-1]:
+            boundary |= (grain_map != np.roll(grain_map, shift, axis=0))
+            boundary |= (grain_map != np.roll(grain_map, shift, axis=1))
+        return boundary
+
+    def _precompute_pearlite_transformation_order(self):
+        if self.steel_type == 'hypereutectoid':
+            consider = [g for g in self.unique_grains if g not in self.large_grain_ids]
+        else:
+            consider = self.unique_grains
+        sizes = []
+        for g in consider:
+            sz = np.sum(self.shrunk_grain_map_1147 == g)
+            if sz > 0:
+                sizes.append((g, sz))
+        sizes.sort(key=lambda x: x[1], reverse=True)
+        self.pearlite_transformation_order = [g for g,s in sizes]
+        self.n_transformable_grains = len(self.pearlite_transformation_order)
+
+    def _add_pearlite_to_grain(self, micro, grain_id):
+        mask = (self.shrunk_grain_map_1147 == grain_id)
+        if np.sum(mask) < 8: return
+        ys, xs = np.where(mask)
+        if len(xs)==0: return
+        ymin, ymax = ys.min(), ys.max()
+        xmin, xmax = xs.min(), xs.max()
+        region = mask[ymin:ymax+1, xmin:xmax+1]
+        Yg, Xg = np.where(region)
+        if len(Xg)==0: return
+        spacing = 2.0
+        angle = 45
+        theta = np.deg2rad(angle)
+        cy, cx = np.mean(Yg), np.mean(xs)
+        Yc = Yg - cy
+        Xc = Xg - cx
+        U = Xc*np.cos(theta) + Yc*np.sin(theta)
+        phase = (np.floor(U/spacing)).astype(int) % 2
+        cem = (phase == 0)
+        fer = (phase == 1)
+        cyy = Yg[cem] + ymin
+        cxx = Xg[cem] + xmin
+        fyy = Yg[fer] + ymin
+        fxx = Xg[fer] + xmin
+        valid_cem = (cxx < micro.shape[1]) & (cyy < micro.shape[0])
+        valid_fer = (fxx < micro.shape[1]) & (fyy < micro.shape[0])
+        micro[cyy[valid_cem], cxx[valid_cem]] = self.cementite_in_pearlite_color
+        micro[fyy[valid_fer], fxx[valid_fer]] = self.ferrite_in_pearlite_color
+
+    def get_transformation_state(self, temperature):
+        if self.steel_type == 'hypoeutectoid':
+            if temperature > self.liquidus_temp:
+                return {'phase':'liquid','description':'Liquid (L)','liquid_fraction':1.0,
+                        'austenite_fraction':0.0,'pearlite_fraction':0.0,
+                        'grains_visible':False,'large_grains_type':'austenite'}
+            elif temperature > self.austenite_start_temp:
+                frac = (self.liquidus_temp - temperature)/(self.liquidus_temp - self.austenite_start_temp)
+                frac = max(0, min(frac, 0.3))
+                return {'phase':'austenite_forming','description':'L + γ (austenite)',
+                        'liquid_fraction':1.0-frac,'austenite_fraction':frac,
+                        'pearlite_fraction':0.0,
+                        'grains_visible':True,'only_large_grains':True,'large_grains_type':'austenite'}
+            elif temperature > self.eutectic_temp:
+                if temperature >= 1300: af = 0.7
+                elif temperature >= 1200: af = 0.85
+                else: af = 0.95
+                return {'phase':'austenite_liquid','description':'L + γ (austenite)',
+                        'liquid_fraction':1.0-af,'austenite_fraction':af,
+                        'pearlite_fraction':0.0,
+                        'grains_visible':True,'only_large_grains':True,'all_grains':False,
+                        'large_grains_type':'austenite'}
+        elif self.steel_type == 'hypereutectoid':
+            if temperature > self.liquidus_temp:
+                return {'phase':'liquid','description':'Liquid (L)','liquid_fraction':1.0,
+                        'cementite_fraction':0.0,'pearlite_fraction':0.0,
+                        'grains_visible':False,'large_grains_type':'cementite'}
+            elif temperature > self.cementite_start_temp:
+                frac = (self.liquidus_temp - temperature)/(self.liquidus_temp - self.cementite_start_temp)
+                frac = max(0, min(frac, 0.3))
+                return {'phase':'cementite_forming','description':'L + Fe₃C',
+                        'liquid_fraction':1.0-frac,'cementite_fraction':frac,
+                        'pearlite_fraction':0.0,
+                        'grains_visible':True,'only_large_grains':True,'large_grains_type':'cementite'}
+            elif temperature > self.eutectic_temp:
+                if temperature >= 1300: cf = 0.7
+                elif temperature >= 1200: cf = 0.85
+                else: cf = 0.95
+                return {'phase':'cementite_liquid','description':'L + Fe₃C',
+                        'liquid_fraction':1.0-cf,'cementite_fraction':cf,
+                        'pearlite_fraction':0.0,
+                        'grains_visible':True,'only_large_grains':True,'all_grains':False,
+                        'large_grains_type':'cementite'}
+        elif self.steel_type == 'eutectoid':
+            if temperature > self.eutectic_temp:
+                return {'phase':'liquid','description':'Liquid (L)','liquid_fraction':1.0,
+                        'austenite_fraction':0.0,'pearlite_fraction':0.0,
+                        'grains_visible':False,'large_grains_type':None}
+        if temperature == self.eutectic_temp:
+            if self.steel_type == 'eutectoid':
+                desc = 'Ledeburite'
+            elif self.steel_type == 'hypoeutectoid':
+                desc = 'Austenite (γ) + Ledeburite I + Fe₃C II'
+            else:
+                desc = 'Ledeburite I + Fe₃C I'
+            return {'phase':'all_grains_appear','description':desc,'liquid_fraction':0.0,
+                    'austenite_fraction':1.0 if self.steel_type!='hypereutectoid' else 0.0,
+                    'cementite_fraction':1.0 if self.steel_type=='hypereutectoid' else 0.0,
+                    'pearlite_fraction':0.0,'grains_visible':True,
+                    'only_large_grains':False,'all_grains':True,'white_background':True,
+                    'large_grains_type':self.large_grains_type}
+        elif temperature >= self.eutectoid_temp:
+            if self.steel_type == 'hypereutectoid':
+                desc = 'Ledeburite I + Fe₃C I'
+            elif self.steel_type == 'hypoeutectoid':
+                desc = 'Austenite (γ) + Ledeburite I + Fe₃C II'
+            else:
+                desc = 'Ledeburite'
+            return {'phase':'ledeburite','description':desc,'liquid_fraction':0.0,
+                    'austenite_fraction':1.0 if self.steel_type!='hypereutectoid' else 0.0,
+                    'cementite_fraction':1.0 if self.steel_type=='hypereutectoid' else 0.0,
+                    'pearlite_fraction':0.0,'grains_visible':True,
+                    'all_grains':True,'white_background':True,'large_grains_type':self.large_grains_type}
+        else:
+            under = self.eutectoid_temp - temperature
+            if temperature == self.eutectoid_temp: pfrac = 0.0
+            elif under < 50: pfrac = min(0.95, under/50)
+            else: pfrac = min(0.98, 0.95 + (under-50)/200)
+            if self.steel_type == 'hypereutectoid':
+                desc = 'Ledeburite II + Fe₃C I'
+            elif self.steel_type == 'hypoeutectoid':
+                desc = 'Pearlite + Ledeburite II + Fe₃C II'
+            else:
+                desc = 'Pearlite'
+            return {'phase':'pearlite_forming','description':desc,'liquid_fraction':0.0,
+                    'austenite_fraction':1.0-pfrac if self.steel_type!='hypereutectoid' else 0.0,
+                    'cementite_fraction':1.0-pfrac if self.steel_type=='hypereutectoid' else 0.0,
+                    'pearlite_fraction':pfrac,
+                    'grains_visible':True,'all_grains':True,'white_background':True,
+                    'large_grains_type':self.large_grains_type,
+                    'n_pearlite_grains':int(pfrac * self.n_transformable_grains)}
+
+    def generate_microstructure(self, temperature):
+        state = self.get_transformation_state(temperature)
+        micro = np.zeros((self.height,self.width,3), dtype=np.uint8)
+        if state['phase'] in ['liquid','austenite_forming','austenite_liquid',
+                              'cementite_forming','cementite_liquid']:
+            micro[:,:,:] = self.liquid_color
+        else:
+            micro[:,:,:] = self.background_color
+
+        current = None
+
+        if state['phase'] == 'liquid':
+            current = np.full((self.height,self.width), -1)
+        elif state['phase'] == 'austenite_forming':
+            current = np.full((self.height,self.width), -1)
+            n_show = max(1, int(len(self.large_grain_ids) * state['austenite_fraction'] / 0.3))
+            for gid in self.large_grain_ids[:n_show]:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    micro[mask] = self.austenite_color
+                    current[mask] = gid
+        elif state['phase'] == 'austenite_liquid':
+            current = np.full((self.height,self.width), -1)
+            for gid in self.large_grain_ids:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    micro[mask] = self.austenite_color
+                    current[mask] = gid
+        elif state['phase'] == 'cementite_forming':
+            current = np.full((self.height,self.width), -1)
+            n_show = max(1, int(len(self.large_grain_ids) * state['cementite_fraction'] / 0.3))
+            for gid in self.large_grain_ids[:n_show]:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    micro[mask] = self.proeutectoid_cementite_color
+                    current[mask] = gid
+        elif state['phase'] == 'cementite_liquid':
+            current = np.full((self.height,self.width), -1)
+            for gid in self.large_grain_ids:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    micro[mask] = self.proeutectoid_cementite_color
+                    current[mask] = gid
+        elif state['phase'] == 'all_grains_appear':
+            current = self.shrunk_grain_map_1147.copy()
+            for gid in self.unique_grains:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    if self.steel_type == 'hypereutectoid':
+                        if gid in self.large_grain_ids:
+                            micro[mask] = self.proeutectoid_cementite_color
+                        else:
+                            micro[mask] = self.austenite_color
+                    else:
+                        micro[mask] = self.austenite_color
+        elif state['phase'] == 'ledeburite':
+            current = self.shrunk_grain_map_1147.copy()
+            for gid in self.unique_grains:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    if self.steel_type == 'hypereutectoid':
+                        if gid in self.large_grain_ids:
+                            micro[mask] = self.proeutectoid_cementite_color
+                        else:
+                            micro[mask] = self.austenite_color
+                    else:
+                        micro[mask] = self.austenite_color
+        else:  # pearlite_forming
+            current = self.shrunk_grain_map_1147.copy()
+            pearl_set = set()
+            if 'n_pearlite_grains' in state:
+                pearl_set = set(self.pearlite_transformation_order[:state['n_pearlite_grains']])
+            for gid in self.unique_grains:
+                mask = (self.shrunk_grain_map_1147 == gid)
+                if np.any(mask):
+                    if gid in pearl_set:
+                        micro[mask] = self.ferrite_in_pearlite_color
+                        self._add_pearlite_to_grain(micro, gid)
+                    else:
+                        if self.steel_type == 'hypereutectoid':
+                            if gid in self.large_grain_ids:
+                                micro[mask] = self.proeutectoid_cementite_color
+                            else:
+                                micro[mask] = self.austenite_color
+                        else:
+                            micro[mask] = self.austenite_color
+
+        if state.get('grains_visible', False) and state.get('phase') not in ['liquid']:
+            if current is not None and np.any(current >= 0):
+                bounds = self._get_grain_boundaries(current)
+                micro[bounds] = self.grain_boundary_color
+
+        if temperature < 723 and current is not None:
+            allowed = (current == -1)
+            self._draw_cementite_grains(micro, allowed)
+
+        return micro, state
+
+
+# ==================== UNIFIED INTERFACE ====================
+def create_unified_simulator(carbon_percent, **kwargs):
+    if carbon_percent < 0 or carbon_percent > 6.67:
+        raise ValueError(f"Carbon must be 0–6.67%, got {carbon_percent}%")
+    defaults = {'width':400, 'height':300, 'seed':42, 'n_grains':50}
+    defaults.update(kwargs)
+    if carbon_percent <= 0.53:
+        return IronCarbonPhaseDiagramSimulator(carbon_percent=carbon_percent, **defaults)
+    elif carbon_percent < 2.06:
+        return SteelMicrostructureSimulator(carbon_percent=carbon_percent, **defaults)
+    else:
+        defaults.setdefault('width', 500)
+        defaults.setdefault('height', 400)
+        return GeneralizedSteel(carbon_percent=carbon_percent, **defaults)
+
+
+# ==================== PLOT KEY TRANSITIONS (TEMPERATURE PROFILE) ====================
+def plot_key_transitions(carbon_percent, **kwargs):
+    simulator = create_unified_simulator(carbon_percent, **kwargs)
+    transitions = []
+
+    transitions.append(("1600°C", 1600, "Liquid"))
+
+    if carbon_percent <= 0.53:
+        C = carbon_percent
+        if C <= 0.09:
+            transitions.append((f"{simulator.liquid_to_L_delta:.0f}°C -5°C",
+                                simulator.liquid_to_L_delta-5, "Liquid+δ"))
+            transitions.append((f"{simulator.delta_to_gamma_delta:.0f}°C -5°C",
+                                simulator.delta_to_gamma_delta-5, "γ+δ"))
+            transitions.append((f"{simulator.gamma_delta_to_gamma:.0f}°C -5°C",
+                                simulator.gamma_delta_to_gamma-5, "γ"))
+        elif C <= 0.17:
+            transitions.append((f"{simulator.liquid_to_L_delta:.0f}°C -5°C",
+                                simulator.liquid_to_L_delta-5, "Liquid+δ"))
+            transitions.append(("1490°C", 1490, "γ+δ"))
+            transitions.append((f"{simulator.gamma_delta_to_gamma:.0f}°C -5°C",
+                                simulator.gamma_delta_to_gamma-5, "γ"))
+        elif C <= 0.53:
+            transitions.append((f"{simulator.liquid_to_L_delta:.0f}°C -5°C",
+                                simulator.liquid_to_L_delta-5, "Liquid+δ"))
+            transitions.append(("1490°C", 1490, "Liquid+γ"))
+            transitions.append((f"{simulator.L_gamma_to_gamma:.0f}°C -5°C",
+                                simulator.L_gamma_to_gamma-5, "γ"))
+        transitions.append(("1200°C", 1200, "γ"))
+        transitions.append((f"{simulator.gamma_to_gamma_alpha:.0f}°C -5°C",
+                            simulator.gamma_to_gamma_alpha-5, "γ+α"))
+        if C < 0.02:
+            transitions.append((f"{simulator.gamma_alpha_to_alpha:.0f}°C -5°C",
+                                simulator.gamma_alpha_to_alpha-5, "α"))
+            transitions.append((f"{simulator.alpha_to_alpha_cementite:.0f}°C -5°C",
+                                simulator.alpha_to_alpha_cementite-5, "α+Fe₃C"))
+            transitions.append(("20°C", 20, "α+Fe₃C (room temp)"))
+        else:
+            transitions.append(("724°C", 724, "γ+α (just above eutectoid)"))
+            transitions.append(("723°C", 723, "PEARLITE STARTS FORMING"))
+            transitions.append(("700°C", 700, "Pearlite forming ~30%"))
+            transitions.append(("650°C", 650, "Pearlite forming ~60%"))
+            transitions.append(("600°C", 600, "Pearlite ~90% complete"))
+            transitions.append(("20°C", 20, "Pearlite + 5 Fe₃C in channels"))
+
+    elif carbon_percent < 2.06:
+        transitions.append((f"{simulator.liquidus_temp:.0f}°C", simulator.liquidus_temp, "Liquidus"))
+        transitions.append((f"{(simulator.liquidus_temp+simulator.solidus_temp)/2:.0f}°C",
+                            (simulator.liquidus_temp+simulator.solidus_temp)/2, "Liquid+Austenite"))
+        transitions.append((f"{simulator.solidus_temp:.0f}°C", simulator.solidus_temp, "Solidus"))
+        transitions.append(("1200°C", 1200, "Austenite"))
+        if hasattr(simulator, 'transition_temp') and simulator.transition_temp is not None:
+            transitions.append((f"{simulator.transition_temp+100:.0f}°C",
+                                simulator.transition_temp+100, "Austenite"))
+            transitions.append((f"{simulator.transition_temp:.0f}°C",
+                                simulator.transition_temp, f"A3/Acm start"))
+        transitions.append((f"{simulator.eutectoid_temp+20:.0f}°C",
+                            simulator.eutectoid_temp+20, "Austenite+Proeutectoid"))
+        transitions.append((f"{simulator.eutectoid_temp:.0f}°C", simulator.eutectoid_temp, "Pearlite start"))
+        transitions.append(("700°C", 700, "Pearlite forming"))
+        transitions.append(("600°C", 600, "Pearlite forming"))
+        transitions.append(("20°C", 20, "Room temp"))
+
+    else:
+        if hasattr(simulator, 'liquidus_temp') and simulator.liquidus_temp:
+            transitions.append((f"{simulator.liquidus_temp:.0f}°C", int(simulator.liquidus_temp),
+                                "Large grains forming"))
+        transitions.append(("1148°C", 1148, "Just above eutectic"))
+        transitions.append(("1147°C", 1147, "Eutectic transformation"))
+        transitions.append(("1000°C", 1000, "Ledeburite"))
+        transitions.append(("723°C", 723, "Pearlite start"))
+        transitions.append(("500°C", 500, "Pearlite forming"))
+        transitions.append(("25°C", 25, "Room temp"))
+
+    if len(transitions) == 0:
+        transitions.append(("20°C", 20, "Room temperature"))
+
+    valid = [(name, t, desc) for name, t, desc in transitions if 20 <= t <= 1600]
+    if len(valid) == 0:
+        valid = [("20°C", 20, "Room temperature (fallback)")]
+
+    n_cols = 4
+    n_rows = int(np.ceil(len(valid) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4*n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    axes = axes.flatten()
+
+    for i, (name, temp, desc) in enumerate(valid):
+        if i >= len(axes): break
+        micro, state = simulator.generate_microstructure(temp)
+        axes[i].imshow(micro)
+        desc_low = state['description'].lower()
+        color = 'black'
+        if 'liquid' in desc_low: color = 'blue'
+        elif 'δ' in desc_low or 'delta' in desc_low: color = 'darkblue'
+        elif 'γ' in desc_low or 'austenite' in desc_low: color = 'darkred'
+        elif 'α' in desc_low or 'ferrite' in desc_low: color = 'darkcyan'
+        elif 'cementite' in desc_low or 'fe₃c' in desc_low: color = 'darkgray'
+        elif 'pearlite' in desc_low: color = 'saddlebrown'
+        elif 'ledeburite' in desc_low: color = 'purple'
+        axes[i].set_title(f'{name}\n{desc}', fontsize=9, color=color, fontweight='bold')
+        axes[i].axis('off')
+
+    for i in range(len(valid), len(axes)):
+        axes[i].axis('off')
+
+    if carbon_percent <= 0.53:
+        ctype = "Low carbon steel"
+    elif carbon_percent < 2.06:
+        ctype = f"{simulator.steel_type.capitalize()} steel"
+    else:
+        ctype = f"{simulator.steel_type.capitalize()} cast iron"
+    plt.suptitle(f'Fe-{carbon_percent}%C: Phase Transformations (1600°C → 20°C)\n{ctype}',
+                 fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.show()
+    return simulator
+
+
+# ==================== CARBON PROFILE AT FIXED TEMPERATURE ====================
+def generate_carbon_list():
+    return [0.0, 0.02, 0.09, 0.17, 0.53, 0.8, 2.06, 4.3, 6.67]
+
+def plot_carbon_profile(temperature, carbon_list=None, **kwargs):
+    if carbon_list is None:
+        carbon_list = generate_carbon_list()
+    n_cols = 5
+    n_rows = int(np.ceil(len(carbon_list) / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 3*n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    axes = axes.flatten()
+    for i, C in enumerate(carbon_list):
+        if i >= len(axes):
+            break
+        sim = create_unified_simulator(C, **kwargs)
+        micro, state = sim.generate_microstructure(temperature)
+        axes[i].imshow(micro)
+        axes[i].set_title(f'{C}% C\n{state["description"]}', fontsize=9)
+        axes[i].axis('off')
+    for i in range(len(carbon_list), len(axes)):
+        axes[i].axis('off')
+    plt.suptitle(f'Fe-C Microstructures at {temperature}°C for various carbon contents',
+                 fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.show()
+
+
+# ==================== ANIMATION FUNCTIONS (silenced with DummyWriter) ====================
+class DummyWriter:
+    def write(self, s): pass
+    def flush(self): pass
+
+def animate_temperature_profile(carbon_percent, temp_range, interval=200, **kwargs):
+    start, end, step_mag = temp_range
+    if start > end:
+        step = -abs(step_mag)
+    else:
+        step = abs(step_mag)
+
+    temps = np.arange(start, end + step/2, step)
+    if len(temps) == 0:
+        print("Error: No temperatures generated. Check start, end, and step.")
+        return
+
+    # Suppress simulator print during creation using dummy writer
+    with redirect_stdout(DummyWriter()):
+        sim = create_unified_simulator(carbon_percent, **kwargs)
+    
+    frames = []
+    titles = []
+    for T in temps:
+        m, s = sim.generate_microstructure(T)
+        frames.append(m)
+        titles.append(f"{T:.0f}°C: {s['description']}")
+
+    fig, ax = plt.subplots(figsize=(6,5))
+    ax.axis('off')
+    im = ax.imshow(frames[0])
+    title = ax.set_title(titles[0], fontsize=10, fontweight='bold')
+
+    def update(idx):
+        im.set_array(frames[idx])
+        title.set_text(titles[idx])
+        return [im, title]
+
+    anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=interval, blit=True)
+    plt.close()
+    return HTML(anim.to_jshtml())
+
+def animate_carbon_profile(fixed_temperature, carbon_range, interval=200, **kwargs):
+    start, end, step = carbon_range
+    if step <= 0:
+        print("Error: Step must be positive for carbon range.")
+        return
+
+    carbons = np.arange(start, end + step/2, step)
+    carbons = [c for c in carbons if 0 <= c <= 6.67]
+    if len(carbons) == 0:
+        print("Error: No carbon values in range 0–6.67. Check start, end, step.")
+        return
+
+    frames = []
+    titles = []
+    for C in carbons:
+        # Suppress simulator print for each creation
+        with redirect_stdout(DummyWriter()):
+            sim = create_unified_simulator(C, **kwargs)
+        m, s = sim.generate_microstructure(fixed_temperature)
+        frames.append(m)
+        titles.append(f"{C:.2f}% C: {s['description']}")
+
+    fig, ax = plt.subplots(figsize=(6,5))
+    ax.axis('off')
+    im = ax.imshow(frames[0])
+    title = ax.set_title(titles[0], fontsize=10, fontweight='bold')
+
+    def update(idx):
+        im.set_array(frames[idx])
+        title.set_text(titles[idx])
+        return [im, title]
+
+    anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=interval, blit=True)
+    plt.close()
+    return HTML(anim.to_jshtml())
+
+
+# ==================== FAST TRANSITION INFO FUNCTIONS (ENHANCED FOR CARBON PROFILE) ====================
+# Phase boundary functions (same as in simulators)
+def liquidus(C):
+    return 0.325201*C**3 - 5.168028*C**2 - 75.120496*C + 1538.747373
+
+def solidus(C):
+    return 66.388*C**3 - 139.918*C**2 - 167.114*C + 1515.012
+
+def A3(C):
+    # valid for C <= 0.76
+    return 910 - 203*math.sqrt(C) - 15.2*C + 0.44*C**2
+
+def Acm(C):
+    # valid for 0.76 <= C <= 2.06
+    return 330.77*C + 471.62
+
+def gamma_alpha_to_alpha(C):
+    # α/(α+γ) boundary, valid for C < 0.02
+    return 27684937.1*C**3 - 545343.1*C**2 - 9597.6*C + 911.5
+
+def alpha_to_alpha_cementite(C):
+    # α/(α+Fe₃C) boundary, valid for C < 0.02
+    return 95613037.48*C**3 - 4905199.82*C**2 + 95670.87*C + 11.05
+
+def liquid_to_cementite(C):
+    # Liquid/(Liquid+Fe₃C) for hypereutectic cast irons, C > 4.3
+    return -19.714*C**3 + 313.032*C**2 - 1554.375*C + 3610.368
+
+def solve_boundary(func, bracket, temp, name):
+    try:
+        sol = root_scalar(lambda c: func(c) - temp, bracket=bracket, method='bisect')
+        if sol.converged and bracket[0] <= sol.root <= bracket[1]:
+            return (sol.root, name)
+    except:
+        pass
+    return None
+
+def get_carbon_transitions(temp):
+    """
+    Compute all relevant phase boundary carbon percentages at a given temperature.
+    Returns a list of (carbon, description) sorted by carbon.
+    """
+    trans = []
+    
+    # α/(α+γ) boundary (very low carbon)
+    if 10 < temp < 912:
+        result = solve_boundary(gamma_alpha_to_alpha, (0, 0.02), temp, "α → α+γ")
+        if result:
+            trans.append(result)
+    
+    # α/(α+Fe₃C) boundary (very low carbon, below eutectoid)
+    if temp < 723 and temp > 11:
+        result = solve_boundary(alpha_to_alpha_cementite, (0, 0.02), temp, "α → α+Fe₃C")
+        if result:
+            trans.append(result)
+    
+    # γ/(γ+α) boundary (A3)
+    if 723 <= temp <= 912:
+        result = solve_boundary(A3, (0, 0.76), temp, "γ → γ+α")
+        if result:
+            trans.append(result)
+    
+    # γ/(γ+Fe₃C) boundary (Acm)
+    if 723 <= temp <= 1147:
+        result = solve_boundary(Acm, (0.76, 2.06), temp, "γ → γ+Fe₃C")
+        if result:
+            trans.append(result)
+    
+    # Liquidus (for all compositions)
+    if temp <= 1538:
+        result = solve_boundary(liquidus, (0, 6.67), temp, "Liquidus")
+        if result:
+            trans.append(result)
+    
+    # Solidus (for steels)
+    if temp <= 1515:
+        result = solve_boundary(solidus, (0, 2.06), temp, "Solidus")
+        if result:
+            trans.append(result)
+    
+    # Liquid/(Liquid+Fe₃C) for hypereutectic cast irons
+    if temp >= 1147 and temp <= 1600:
+        result = solve_boundary(liquid_to_cementite, (4.3, 6.67), temp, "L → L+Fe₃C")
+        if result:
+            trans.append(result)
+    
+    # Invariant points (only include if temperature is very close)
+    if abs(temp - 723) < 10:
+        trans.append((0.76, "γ → α+Fe₃C (Eutectoid)"))
+    if abs(temp - 1147) < 10:
+        trans.append((4.3, "L → γ+Fe₃C (Eutectic)"))
+    
+    # Remove duplicates by carbon value (keep first occurrence)
+    unique = {}
+    for c, desc in trans:
+        if c not in unique:
+            unique[c] = desc
+    sorted_trans = sorted([(c, desc) for c, desc in unique.items()], key=lambda x: x[0])
+    return sorted_trans
+
+
+def create_dashboard():
+    # Widgets
+    profile_type = widgets.Dropdown(
+        options=['Temperature profile', 'Carbon profile'],
+        value='Temperature profile',
+        description='Profile:',
+        style={'description_width': 'initial'}
+    )
+    
+    # Input fields with appropriate defaults
+    fixed_label = widgets.Label('Fixed carbon (%):')
+    fixed_input = widgets.FloatText(value=0.2, step=0.01, description='')
+    start_label = widgets.Label('Start temperature (°C):')
+    start_input = widgets.FloatText(value=1600, step=10)
+    end_label = widgets.Label('End temperature (°C):')
+    end_input = widgets.FloatText(value=20, step=10)
+    step_label = widgets.Label('Step (°C):')
+    step_input = widgets.FloatText(value=40, step=1)   # default step = 40°C
+    
+    inputs_box = widgets.VBox([
+        widgets.HBox([fixed_label, fixed_input]),
+        widgets.HBox([start_label, start_input]),
+        widgets.HBox([end_label, end_input]),
+        widgets.HBox([step_label, step_input])
+    ])
+    
+    def update_labels(change):
+        if change['new'] == 'Temperature profile':
+            fixed_label.value = 'Fixed carbon (%):'
+            fixed_input.value = 0.2
+            start_label.value = 'Start temperature (°C):'
+            start_input.value = 1600
+            end_label.value = 'End temperature (°C):'
+            end_input.value = 20
+            step_label.value = 'Step (°C):'
+            step_input.value = 40          # default step = 40°C
+        else:
+            fixed_label.value = 'Fixed temperature (°C):'
+            fixed_input.value = 800
+            start_label.value = 'Start carbon (%):'
+            start_input.value = 0.0
+            end_label.value = 'End carbon (%):'
+            end_input.value = 6.67
+            step_label.value = 'Step (%):'
+            step_input.value = 0.1
+    profile_type.observe(update_labels, names='value')
+    
+    generate_btn = widgets.Button(description='Generate Animation', button_style='success')
+    
+    animation_output = widgets.Output()
+    legend_output = widgets.Output()
+    
+    left_col = widgets.VBox([profile_type, inputs_box, generate_btn, animation_output])
+    right_col = widgets.VBox([legend_output], layout=widgets.Layout(width='300px'))
+    dashboard = widgets.HBox([left_col, right_col])
+    
+    def show_legend():
+        with legend_output:
+            clear_output(wait=True)
+            fig_leg, ax_leg = plt.subplots(figsize=(2.5, 4))
+            ax_leg.axis('off')
+            from matplotlib.patches import Patch
+            patches = [
+                Patch(color=np.array(COLORS['liquid'])/255, label='Liquid (L)'),
+                Patch(color=np.array(COLORS['delta_ferrite'])/255, label='δ-ferrite (δ)'),
+                Patch(color=np.array(COLORS['austenite'])/255, label='Austenite (γ)'),
+                Patch(color=np.array(COLORS['alpha_ferrite'])/255, label='α-ferrite (α)'),
+                Patch(color=np.array(COLORS['proeutectoid_ferrite'])/255, label='Proeutectoid Ferrite'),
+                Patch(color=np.array(COLORS['cementite_bulk'])/255, label='Cementite (Fe₃C) bulk'),
+                Patch(color=np.array(COLORS['pearlite_ferrite'])/255, label='Pearlite Ferrite'),
+                Patch(color=np.array(COLORS['pearlite_cementite'])/255, label='Pearlite Cementite'),
+                Patch(color=np.array(COLORS['grain_boundary'])/255, label='Grain Boundary'),
+                Patch(color=np.array(COLORS['background'])/255, label='Ledeburite matrix')
+            ]
+            ax_leg.legend(handles=patches, loc='center', fontsize=8, frameon=False)
+            plt.show()
+    
+    def on_generate(b):
+        with animation_output:
+            clear_output(wait=True)
+            try:
+                if profile_type.value == 'Temperature profile':
+                    fixed_c = fixed_input.value
+                    start = start_input.value
+                    end = end_input.value
+                    step_mag = step_input.value
+                    if step_mag <= 0:
+                        print("Step must be positive.")
+                        return
+                    temp_range = (start, end, step_mag)
+                    print("Generating animation (this may take a few seconds due to grain generation)...")
+                    anim_html = animate_temperature_profile(fixed_c, temp_range, interval=200)
+                    if anim_html:
+                        display(anim_html)
+                else:
+                    fixed_t = fixed_input.value
+                    start_c = start_input.value
+                    end_c = end_input.value
+                    step = step_input.value
+                    if step <= 0:
+                        print("Step must be positive.")
+                        return
+                    carbon_range = (start_c, end_c, step)
+                    print("Generating animation (this may take a few seconds due to grain generation)...")
+                    anim_html = animate_carbon_profile(fixed_t, carbon_range, interval=200)
+                    if anim_html:
+                        display(anim_html)
+            except Exception as e:
+                print(f"Error: {e}")
+    
+    generate_btn.on_click(on_generate)
+    
+    show_legend()
+    
+    return dashboard
+
+# ==================== FAST TRANSITION TEMPERATURE FUNCTIONS ====================
+def get_transition_temperatures_low_carbon(C):
+    temps = []
+    liquid_to_L_delta = -81.13 * C + 1536
+    temps.append(("Liquid → Liquid+δ", liquid_to_L_delta))
+    if C <= 0.09:
+        L_delta_to_same = -477.77 * C + 1536
+        delta_to_gamma_delta = 1122.22 * C + 1392
+        gamma_delta_to_gamma = -623.331756*(C**2) + 717.550337*C + 1390.6
+        temps.append(("Liquid+δ remains same", L_delta_to_same))
+        temps.append(("Liquid+δ → γ+δ", delta_to_gamma_delta))
+        temps.append(("γ+δ → γ", gamma_delta_to_gamma))
+    elif C <= 0.17:
+        L_delta_to_gamma_delta = 1493
+        gamma_delta_to_gamma = -623.331756*(C**2) + 717.550337*C + 1390.6
+        temps.append(("Liquid+δ → γ+δ", L_delta_to_gamma_delta))
+        temps.append(("γ+δ → γ", gamma_delta_to_gamma))
+    elif C <= 0.53:
+        L_delta_to_L_gamma = 1493
+        L_gamma_to_gamma = 66.388*(C**3) - 139.918*(C**2) - 167.114*C + 1515.012
+        temps.append(("Liquid+δ → Liquid+γ", L_delta_to_L_gamma))
+        temps.append(("Liquid+γ → γ", L_gamma_to_gamma))
+    gamma_to_gamma_alpha = 910 - 203*math.sqrt(C) - 15.2*C + 0.44*(C**2)
+    temps.append(("γ → γ+α", gamma_to_gamma_alpha))
+    if C < 0.02:
+        gamma_alpha_to_alpha = (27684937.1*(C**3) - 545343.1*(C**2) - 9597.6*C + 911.5)
+        alpha_to_alpha_cementite = (95613037.48*(C**3) - 4905199.82*(C**2) + 95670.87*C + 11.05)
+        temps.append(("γ+α → α", gamma_alpha_to_alpha))
+        temps.append(("α → α+Fe₃C", alpha_to_alpha_cementite))
+    else:
+        temps.append(("Eutectoid start", 723))
+    return temps
+
+def get_transition_temperatures_steel(C):
+    temps = []
+    liquidus = 0.325201*C**3 - 5.168028*C**2 - 75.120496*C + 1538.747373
+    solidus = 66.388*C**3 - 139.918*C**2 - 167.114*C + 1515.012
+    temps.append(("Liquidus", liquidus))
+    temps.append(("Solidus", solidus))
+    if C < 0.76:
+        A3 = 910 - 203*math.sqrt(C) - 15.2*C + 0.44*C**2
+        temps.append(("A3 (γ→γ+α)", A3))
+    else:
+        Acm = 330.77*C + 471.62
+        temps.append(("Acm (γ→γ+Fe₃C)", Acm))
+    temps.append(("Eutectoid", 723))
+    return temps
+
+def get_transition_temperatures_cast(C):
+    temps = []
+    if C < 4.3:
+        liquid_to_austenite = 0.325201*C**3 - 5.168028*C**2 - 75.120496*C + 1538.747373
+        temps.append(("Liquid → Liquid+γ", liquid_to_austenite))
+    elif C > 4.3:
+        liquid_to_cementite = -19.714*C**3 + 313.032*C**2 - 1554.375*C + 3610.368
+        temps.append(("Liquid → Liquid+Fe₃C", liquid_to_cementite))
+    temps.append(("Eutectic", 1147))
+    temps.append(("Eutectoid", 723))
+    return temps
+
+def show_transition_info_fast(carbon):
+    if carbon <= 0.53:
+        trans = get_transition_temperatures_low_carbon(carbon)
+    elif carbon < 2.06:
+        trans = get_transition_temperatures_steel(carbon)
+    else:
+        trans = get_transition_temperatures_cast(carbon)
+    print(f"Transition temperatures for {carbon}% C:")
+    for desc, temp in trans:
+        print(f"  {desc}: {temp:.1f}°C")
+
+# ==================== MAIN EXECUTION (Dashboard) ====================
+if __name__ == "__main__":
+    # In a Jupyter environment, run:
+    dashboard = create_dashboard()
+    display(dashboard)
