@@ -4,13 +4,12 @@ import numpy as np
 from scipy import ndimage
 from sklearn.cluster import KMeans
 
-from .base import BaseSimulator
-from .constants import COLORS
+from simulator.base import BaseSimulator
+from simulator.constants import COLORS
 
 # ==================== GENERALIZED STEEL (2.06-6.67%C) ====================
 class GeneralizedSteel(BaseSimulator):
     def __init__(self, carbon_percent=2.06, width=500, height=400, n_grains=50, seed=42):
-        super().__init__()
         self.carbon_percent = carbon_percent
         self.width = width
         self.height = height
@@ -470,3 +469,8 @@ class GeneralizedSteel(BaseSimulator):
             self._draw_cementite_grains(micro, allowed)
 
         return micro, state
+
+    def get_phase_state(self, temperature):
+        return self.get_transformation_state(temperature)
+
+print("All works!")
