@@ -1,4 +1,11 @@
-from simulator.base import BaseSimulator
+import random
+import math
+import numpy as np
+from scipy import ndimage
+from sklearn.cluster import KMeans
+
+from .base import BaseSimulator
+from .constants import COLORS
 
 # ==================== GENERALIZED STEEL (2.06-6.67%C) ====================
 class GeneralizedSteel(BaseSimulator):
