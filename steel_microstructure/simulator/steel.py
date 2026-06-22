@@ -1,6 +1,9 @@
+from simulator.base import BaseSimulator
+
 # ==================== STEEL MICROSTRUCTURE SIMULATOR (0.53-2.06%C) ====================
-class SteelMicrostructureSimulator:
+class SteelMicrostructureSimulator(BaseSimulator):
     def __init__(self, carbon_percent=0.76, width=400, height=300, n_grains=50, seed=42):
+        super().__init__()
         self.carbon_percent = carbon_percent
         self.width = width
         self.height = height

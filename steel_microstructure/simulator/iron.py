@@ -1,6 +1,9 @@
+from simulator.base import BaseSimulator
+
 # ==================== IRON-CARBON PHASE DIAGRAM SIMULATOR (0-0.53%C) ====================
-class IronCarbonPhaseDiagramSimulator:
+class IronCarbonPhaseDiagramSimulator(BaseSimulator):
     def __init__(self, carbon_percent=0.2, width=400, height=300, n_grains=50, seed=42):
+        super().__init__()
         self.carbon_percent = carbon_percent
         self.width = width
         self.height = height

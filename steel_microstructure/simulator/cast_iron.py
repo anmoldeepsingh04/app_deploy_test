@@ -1,6 +1,9 @@
+from simulator.base import BaseSimulator
+
 # ==================== GENERALIZED STEEL (2.06-6.67%C) ====================
-class GeneralizedSteel:
+class GeneralizedSteel(BaseSimulator):
     def __init__(self, carbon_percent=2.06, width=500, height=400, n_grains=50, seed=42):
+        super().__init__()
         self.carbon_percent = carbon_percent
         self.width = width
         self.height = height
