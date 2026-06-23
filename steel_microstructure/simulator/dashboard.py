@@ -1,3 +1,22 @@
+"""
+This file can only be run inside a jupyter environment. To create and display the dashboard, following steps are needed:
+1. install jupyter in your working directory: "pip install jupyter"
+2. start the jupyter server from package folder (simulator): "jupyter notebook"
+3. A webpage will open, go the file, new ipynb and select the ipykernel
+4. paste the following code in the first cell and run it:
+=======
+import sys
+sys.path.insert(0, '.')   # tells Python to look in the current folder
+
+from simulator.dashboard import create_dashboard
+
+dashboard = create_dashboard()
+display(dashboard)
+=======
+5. your dashboard is functional
+"""
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
