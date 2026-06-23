@@ -10,6 +10,7 @@ from simulator.constants import COLORS
 # ==================== GENERALIZED STEEL (2.06-6.67%C) ====================
 class GeneralizedSteel(BaseSimulator):
     def __init__(self, carbon_percent=2.06, width=500, height=400, n_grains=50, seed=42):
+        super().__init__(carbon_percent, width, height, n_grains, seed)
         self.carbon_percent = carbon_percent
         self.width = width
         self.height = height
@@ -472,5 +473,3 @@ class GeneralizedSteel(BaseSimulator):
 
     def get_phase_state(self, temperature):
         return self.get_transformation_state(temperature)
-
-print("All works!")

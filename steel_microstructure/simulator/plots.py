@@ -1,3 +1,8 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+from simulator.factory import create_unified_simulator
+
 # ==================== CARBON PROFILE AT FIXED TEMPERATURE ====================
 def generate_carbon_list():
     return [0.0, 0.02, 0.09, 0.17, 0.53, 0.8, 2.06, 4.3, 6.67]

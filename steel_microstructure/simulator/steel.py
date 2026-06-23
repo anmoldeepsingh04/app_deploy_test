@@ -1,13 +1,21 @@
+import random
+import math
+import numpy as np
+from scipy import ndimage
+from sklearn.cluster import KMeans
+
+
 from simulator.base import BaseSimulator
+from simulator.constants import COLORS
 
 # ==================== STEEL MICROSTRUCTURE SIMULATOR (0.53-2.06%C) ====================
 class SteelMicrostructureSimulator(BaseSimulator):
     def __init__(self, carbon_percent=0.76, width=400, height=300, n_grains=50, seed=42):
-        super().__init__()
-        self.carbon_percent = carbon_percent
-        self.width = width
-        self.height = height
-        self.seed = seed
+        super().__init__(carbon_percent, width, height, n_grains, seed)
+        # self.carbon_percent = carbon_percent
+        # self.width = width
+        # self.height = height
+        # self.seed = seed
         self._calculate_transformation_temperatures()
         self.original_grain_map = self._create_grain_structure(width, height, n_grains, seed)
         self.unique_grains = np.unique(self.original_grain_map)
@@ -243,6 +251,7 @@ class SteelMicrostructureSimulator(BaseSimulator):
             return {'phase':'pearlite_forming','description':desc,'erosion_amount':5}
 
     def generate_microstructure(self, temperature):
+
         state = self.get_transformation_state(temperature)
         micro = np.ones((self.height,self.width,3),dtype=np.uint8)*self.background_color
         current = None
@@ -307,3 +316,6 @@ class SteelMicrostructureSimulator(BaseSimulator):
             self._draw_cementite_grains(micro, allowed)
 
         return micro, state
+
+    def get_phase_state(self, temperature):
+        return super().get_transformation_state(temperature)

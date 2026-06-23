@@ -1,6 +1,9 @@
 # virtual environment
 hwork/
 
+# path files
+steel_microstructure/simulator.egg-info
+
 # python cache
 __pycache__/
 *.pyc

@@ -1,3 +1,7 @@
+from simulator.iron import IronCarbonPhaseDiagramSimulator
+from simulator.steel import SteelMicrostructureSimulator
+from simulator.cast_iron import GeneralizedSteel
+
 # ==================== UNIFIED INTERFACE ====================
 def create_unified_simulator(carbon_percent, **kwargs):
     if carbon_percent < 0 or carbon_percent > 6.67:

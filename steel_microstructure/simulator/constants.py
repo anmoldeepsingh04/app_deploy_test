@@ -7,9 +7,6 @@ from sklearn.cluster import KMeans
 from scipy import ndimage
 import random
 import math
-from IPython.display import HTML, display
-import ipywidgets as widgets
-from IPython.display import clear_output
 import io, sys
 from scipy.optimize import root_scalar
 from contextlib import redirect_stdout

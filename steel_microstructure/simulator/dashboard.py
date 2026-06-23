@@ -1,3 +1,11 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
+from simulator.constants import COLORS
+from simulator.animation import animate_temperature_profile, animate_carbon_profile
+
 def create_dashboard():
     # Widgets
     profile_type = widgets.Dropdown(

@@ -1,3 +1,9 @@
+from simulator.transitions import(
+    get_transition_temperatures_low_carbon,
+    get_transition_temperatures_steel,
+    get_transition_temperatures_cast,
+)
+
 def show_transition_info_fast(carbon):
     if carbon <= 0.53:
         trans = get_transition_temperatures_low_carbon(carbon)

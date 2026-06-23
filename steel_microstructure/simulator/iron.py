@@ -1,13 +1,21 @@
+import random
+import math
+import numpy as np
+from scipy import ndimage
+from sklearn.cluster import KMeans
+
+
 from simulator.base import BaseSimulator
+from simulator.constants import COLORS
 
 # ==================== IRON-CARBON PHASE DIAGRAM SIMULATOR (0-0.53%C) ====================
 class IronCarbonPhaseDiagramSimulator(BaseSimulator):
     def __init__(self, carbon_percent=0.2, width=400, height=300, n_grains=50, seed=42):
-        super().__init__()
-        self.carbon_percent = carbon_percent
-        self.width = width
-        self.height = height
-        self.seed = seed
+        super().__init__(carbon_percent, width, height, n_grains, seed)
+        # self.carbon_percent = carbon_percent
+        # self.width = width
+        # self.height = height
+        # self.seed = seed
         random.seed(seed)
 
         self._calculate_all_transition_temperatures()
@@ -391,3 +399,8 @@ class IronCarbonPhaseDiagramSimulator(BaseSimulator):
             self._draw_cementite_grains(micro, allowed)
 
         return micro, state
+    
+
+    # alias method for parent class
+    def get_phase_state(self, temperature):
+        return self.get_phase_region(temperature)

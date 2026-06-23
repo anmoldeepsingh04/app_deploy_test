@@ -1,3 +1,11 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from contextlib import redirect_stdout
+from IPython.display import HTML
+
+from simulator.factory import create_unified_simulator
+
 # ==================== ANIMATION FUNCTIONS (silenced with DummyWriter) ====================
 class DummyWriter:
     def write(self, s): pass
