@@ -1,14 +1,15 @@
 ---
-title: Streamlit Template Space
+title: App Deploy Test
 emoji: 🚀
 colorFrom: red
 colorTo: red
 sdk: docker
 app_port: 8501
 tags:
-  - streamlit
+- streamlit
 pinned: false
-short_description: Streamlit template space
+short_description: Testing the deployment of iron phase diagram simulator
+license: mit
 ---
 
 # Welcome to Streamlit!
