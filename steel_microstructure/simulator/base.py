@@ -38,4 +38,5 @@ class BaseSimulator(ABC):
         return boundary
     
     def describe(self):
-        return f"{self.__class__.__name__}(C={self.carbon_percent}%, {self.width}x{self.height}px, seed={self.seed})" 
+        # return f"{self.__class__.__name__}(C={self.carbon_percent}%, {self.width}x{self.height}px, seed={self.seed})" # original
+        return f"{self.__class__.__name__}( C={self.carbon_percent}%)" 
