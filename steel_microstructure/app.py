@@ -45,19 +45,16 @@ def get_carbon_regime(carbon_percent):
 # the new image in any image editor and hovering over the equivalent points.
 # =============================================================================
 
-DISPLAY_WIDTH = 2000
-SCALE = DISPLAY_WIDTH / 8000   # = 0.25
-
 # COL_LEFT   = int(700  * SCALE)
 # COL_RIGHT  = int(7755 * SCALE)
 # ROW_TOP    = int(185  * SCALE)
 # ROW_BOTTOM = int(5063 * SCALE)
 
 
-COL_LEFT   = int(700  * SCALE)    # pixel x of the y-axis line  → carbon = 0%
-COL_RIGHT  = int(7755 * SCALE)   # pixel x of the right end of x-axis → carbon = 6.67%
-ROW_TOP    = int(185  * SCALE)    # pixel y of the top of the y-axis → temperature = T_TOP
-ROW_BOTTOM = int(5063 * SCALE)   # pixel y of the x-axis line → temperature = T_BOTTOM
+COL_LEFT   = 175    # pixel x of the y-axis line  → carbon = 0%
+COL_RIGHT  = 1938   # pixel x of the right end of x-axis → carbon = 6.67%
+ROW_TOP    = 46    # pixel y of the top of the y-axis → temperature = T_TOP
+ROW_BOTTOM = 1265   # pixel y of the x-axis line → temperature = T_BOTTOM
 T_TOP      = 1600   # °C at the top of the diagram
 T_BOTTOM   = 20     # °C at the bottom of the diagram
 C_MAX      = 6.67   # maximum carbon % on the diagram
@@ -177,13 +174,8 @@ with col2:
     diagram_path = os.path.join(assets_dir, "Iron_carbon_phase_diagram.jpg")
 
     # Load the image as a numpy array so matplotlib can display it.
-    Image.MAX_IMAGE_PIXELS = None          # allow large image to open
-    pil_img = Image.open(diagram_path)
-    pil_img = pil_img.resize(              # downsample to display size
-        (DISPLAY_WIDTH, int(DISPLAY_WIDTH * pil_img.size[1] / pil_img.size[0])),
-        Image.LANCZOS
-    )
-    diagram_img = np.array(pil_img)
+    # Image file is already pre-resized to ~2000px wide — load it directly.
+    diagram_img = np.array(Image.open(diagram_path))
 
     # Compute where on the image the current (carbon, temperature) point is.
     px, py = data_to_pixel(carbon_percent, temperature)
