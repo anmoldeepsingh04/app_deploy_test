@@ -83,7 +83,7 @@ def data_to_pixel(carbon, temperature):
 # =============================================================================
 st.set_page_config(page_title="Iron-Carbon Microstructure Simulator", layout="wide")
 
-st.title("🔩 Iron-Carbon Phase Diagram Microstructure Simulator")
+st.title("Iron-Carbon Phase Diagram Microstructure Simulator")
 st.write(
     "Pick a carbon percentage and a temperature to see what the metal's "
     "microstructure looks like at that point on the iron-carbon phase diagram."
