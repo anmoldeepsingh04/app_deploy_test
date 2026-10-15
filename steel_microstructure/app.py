@@ -217,11 +217,11 @@ with col2:
     plt.close(fig2)
 
 
-# =============================================================================
-# FOOTER
-# =============================================================================
-st.divider()
-st.caption(
-    "This app only exposes inputs and outputs — the underlying simulation "
-    "code is not visible to visitors of the website."
-)
+# # =============================================================================
+# # FOOTER
+# # =============================================================================
+# st.divider()
+# st.caption(
+#     "This app only exposes inputs and outputs — the underlying simulation "
+#     "code is not visible to visitors of the website."
+# )
